@@ -1,0 +1,533 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>民泊 立体図</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700&display=swap">
+<style>
+/* Layout: full-bleed 3D stage, title top-left, floor/view controls bottom-center */
+:root{
+  --bg:#eef1f2; --fg:#1c2327; --muted:#5b676e; --panel:rgba(255,255,255,.82);
+  --line:#cfd6d9; --accent:#1d6e8a; --on-accent:#ffffff;
+  --font:'Zen Kaku Gothic New','Hiragino Sans','Yu Gothic','Noto Sans JP',sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14191c; --fg:#e8edf0; --muted:#97a3aa; --panel:rgba(32,39,43,.82);
+    --line:#364046; --accent:#6cc1de; --on-accent:#0c1519; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#14191c; --fg:#e8edf0; --muted:#97a3aa; --panel:rgba(32,39,43,.82);
+  --line:#364046; --accent:#6cc1de; --on-accent:#0c1519; color-scheme:dark;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--font);margin:0}
+.stage{position:relative;height:100%;overflow:hidden}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+canvas:active{cursor:grabbing}
+.top{position:absolute;top:0;left:0;right:0;pointer-events:none;
+  padding-top:16px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));
+  padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1{margin:0;font-size:20px;font-weight:700;letter-spacing:.03em;text-wrap:balance}
+.top p{margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.6;max-width:34em}
+.bar{position:absolute;left:0;right:0;bottom:0;display:flex;flex-wrap:wrap;justify-content:center;gap:8px;
+  padding-bottom:16px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));
+  padding-right:max(16px,env(safe-area-inset-right,0px))}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;
+  background:var(--panel);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.seg button{font:inherit;font-size:13px;font-weight:500;min-height:40px;padding:0 14px;border:0;
+  background:transparent;color:var(--fg);cursor:pointer}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--on-accent)}
+.seg button:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
+</style>
+
+<div class="stage" id="stage">
+  <canvas id="c" aria-label="民泊の3D間取りモデル"></canvas>
+  <header class="top">
+    <h1>民泊 立体図</h1>
+    <p>図面（1F・2F・3F）から起こした概略モデルです。ドラッグで回転、ホイールやピンチで拡大できます。</p>
+  </header>
+  <div class="bar">
+    <div class="seg" id="floors" role="group" aria-label="表示する階">
+      <button data-f="all" aria-pressed="true">全階</button>
+      <button data-f="0" aria-pressed="false">1F</button>
+      <button data-f="1" aria-pressed="false">2F</button>
+      <button data-f="2" aria-pressed="false">3F</button>
+    </div>
+    <div class="seg" id="views" role="group" aria-label="視点">
+      <button data-v="tilt" aria-pressed="true">斜め</button>
+      <button data-v="top" aria-pressed="false">真上</button>
+    </div>
+    <div class="seg">
+      <button id="lbl" aria-pressed="true">部屋名</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function(){
+  // ---- scale: 1 unit = 20px of the PDF. Plan origin = PDF 1F coordinates. ----
+  var S=20, CX=290, CY=480, H=6.2, WH=3.2, WT=8.4;
+  function X(x){return (x-CX)/S;}
+  function Z(y){return (y-CY)/S;}
+  var FONT='"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic","Noto Sans JP",sans-serif';
+
+  var canvas=document.getElementById('c'), stage=document.getElementById('stage');
+  var renderer=new THREE.WebGLRenderer({canvas:canvas,antialias:true});
+  renderer.shadowMap.enabled=false;
+  renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+  var scene=new THREE.Scene();
+  var camera=new THREE.PerspectiveCamera(30,1,1,400);
+
+  scene.add(new THREE.HemisphereLight(0xffffff,0xaab2b8,0.9));
+  var sun=new THREE.DirectionalLight(0xffffff,0.8);
+  sun.position.set(-16,40,26);
+  sun.castShadow=false;
+  sun.shadow.mapSize.set(2048,2048);
+  sun.shadow.camera.left=-32; sun.shadow.camera.right=32;
+  sun.shadow.camera.top=32; sun.shadow.camera.bottom=-32;
+  sun.shadow.camera.near=5; sun.shadow.camera.far=130;
+  sun.shadow.bias=-0.0006;
+  sun.shadow.radius=4;
+  scene.add(sun);
+
+  var ground=new THREE.Mesh(new THREE.PlaneGeometry(120,120),new THREE.ShadowMaterial({opacity:0.16}));
+  ground.rotation.x=-Math.PI/2; ground.position.y=-0.32; ground.receiveShadow=true;
+  scene.add(ground);
+
+  var G=[new THREE.Group(),new THREE.Group(),new THREE.Group()];
+  G.forEach(function(g){scene.add(g);});
+  // 201 sits half a floor above 1F: built as 2F, then lowered by half a floor
+  // 301 is effectively the 2.5th floor: lower the whole 3F group by half a floor
+  G[2].position.y=-H/2;
+  var G201=new THREE.Group(); G201.position.y=-H/2; scene.add(G201);
+  function in201(fn){ var s=G[1]; G[1]=G201; fn(); G[1]=s; }
+  // staff room is a semi-basement: built as 1F, then lowered by half a floor
+  var Gsb=new THREE.Group(); Gsb.position.y=-H/2; scene.add(Gsb);
+  function inSB(fn){ var s=G[0]; G[0]=Gsb; sbMode=true; fn(); sbMode=false; G[0]=s; }
+
+  var mats={};
+  function mat(c){ if(!mats[c]) mats[c]=new THREE.MeshLambertMaterial({color:c}); return mats[c]; }
+  var lineMat=new THREE.LineBasicMaterial({color:0xa6a196,transparent:true,opacity:0.55});
+
+  // box in PDF px coordinates (x1,y1)-(x2,y2); yb = bottom height in world units, h = height
+  function box(g,x1,y1,x2,y2,yb,h,color,edge){
+    var geo=new THREE.BoxGeometry((x2-x1)/S,h,(y2-y1)/S);
+    var m=new THREE.Mesh(geo,mat(color));
+    m.position.set(X((x1+x2)/2),yb+h/2,Z((y1+y2)/2));
+    m.castShadow=true; m.receiveShadow=true;
+    g.add(m);
+    if(edge){
+      var l=new THREE.LineSegments(new THREE.EdgesGeometry(geo),lineMat);
+      l.position.copy(m.position); g.add(l);
+    }
+    return m;
+  }
+  function cyl(g,cx,cy,r,yb,h,color){
+    var m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,24),mat(color));
+    m.position.set(X(cx),yb+h/2,Z(cy)); m.castShadow=true; g.add(m);
+  }
+  // procedural wood-plank texture (greyscale, tinted per floor colour)
+  var woodTex=null;
+  function makeWoodTex(){
+    var c=document.createElement('canvas'); c.width=c.height=256;
+    var g=c.getContext('2d'), rows=8, ph=256/rows, seed=7;
+    function rnd(){ seed=(seed*16807)%2147483647; return seed/2147483647; }
+    for(var r=0;r<rows;r++){
+      var x=-rnd()*128;
+      while(x<256){
+        var len=96+rnd()*128, v=222+Math.floor(rnd()*28);
+        g.fillStyle='rgb('+v+','+v+','+v+')'; g.fillRect(x,r*ph,len,ph);
+        g.strokeStyle='rgba(0,0,0,0.10)'; g.lineWidth=1;
+        for(var k=0;k<4;k++){ var gy=r*ph+3+rnd()*(ph-6); g.beginPath(); g.moveTo(x,gy); g.lineTo(x+len,gy+(rnd()-0.5)*3); g.stroke(); }
+        g.strokeStyle='rgba(0,0,0,0.32)'; g.lineWidth=1.5; g.strokeRect(x+0.5,r*ph+0.5,len,ph);
+        x+=len;
+      }
+    }
+    var t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.anisotropy=4;
+    return t;
+  }
+  var WOODSET={};
+  function floor(l,x1,y1,x2,y2,color,raise){
+    raise=raise||0;
+    var m=box(G[l],x1,y1,x2,y2,l*H-0.3,0.3+raise,color,false);
+    if(WOODSET[color]){
+      if(!woodTex) woodTex=makeWoodTex();
+      var t=woodTex.clone(); t.needsUpdate=true; t.wrapS=t.wrapT=THREE.RepeatWrapping;
+      // rotate 90 degrees so planks run north-south
+      t.center.set(0.5,0.5); t.rotation=Math.PI/2;
+      t.repeat.set((y2-y1)/S/4,(x2-x1)/S/4);
+      m.material=new THREE.MeshLambertMaterial({color:color,map:t});
+    }
+    return m;
+  }
+
+  // ---- doors (openings in walls) ----
+  var doors=[];
+  var sbMode=false;
+  function door(l,o,c,a,b,nosb){doors.push({l:l,o:o,c:c,a:a,b:b,nosb:nosb});}
+  var WALL='#f6f4ef', RAIL='#d6dcdf';
+
+  function wallRect(l,x1,y1,x2,y2,h,t,color){
+    h=h||WH; t=t||WT; color=color||WALL;
+    edge('h',y1,x1,x2); edge('h',y2,x1,x2); edge('v',x1,y1,y2); edge('v',x2,y1,y2);
+    function edge(o,c,a,b){
+      var segs=[[a,b]];
+      doors.forEach(function(d){
+        if(d.l!==l||d.o!==o||Math.abs(d.c-c)>6) return;
+        if(sbMode&&d.nosb) return;
+        var n=[];
+        segs.forEach(function(sg){
+          var s=sg[0],e=sg[1];
+          if(d.b<=s||d.a>=e){n.push([s,e]);return;}
+          if(d.a>s) n.push([s,d.a]);
+          if(d.b<e) n.push([d.b,e]);
+        });
+        segs=n;
+      });
+      segs.forEach(function(sg){
+        var s=sg[0]===a?sg[0]-t/2:sg[0], e=sg[1]===b?sg[1]+t/2:sg[1];
+        if(o==='h') box(G[l],s,c-t/2,e,c+t/2,l*H,h,color,true);
+        else box(G[l],c-t/2,s,c+t/2,e,l*H,h,color,true);
+      });
+    }
+  }
+  function rail(l,x1,y1,x2,y2){ wallRect(l,x1,y1,x2,y2,1.1,2.6,RAIL); }
+
+  function stairs(l,x1,y1,x2,y2,dir,n,rise){
+    if(dir==='E'||dir==='W'){
+      var lx=(x2-x1)/n;
+      for(var j=0;j<n;j++){
+        var hh=(j+1)*rise/n, xa, xb;
+        if(dir==='E'){ xa=x1+j*lx; xb=x1+(j+1)*lx; } else { xa=x2-(j+1)*lx; xb=x2-j*lx; }
+        box(G[l],xa,y1,xb,y2,l*H,hh,'#ece8e0',true);
+      }
+      return;
+    }
+    var len=(y2-y1)/n;
+    for(var i=0;i<n;i++){
+      var h=(i+1)*rise/n, ya, yb;
+      if(dir==='N'){ ya=y2-(i+1)*len; yb=y2-i*len; }
+      else { ya=y1+i*len; yb=y1+(i+1)*len; }
+      box(G[l],x1,ya,x2,yb,l*H,h,'#ece8e0',true);
+    }
+  }
+
+  // ---- colors (follow the PDF) ----
+  var WOODF='#a0713f', WET='#d3ebf4', TOILET='#a0713f', PEACH='#6b5442', GREYFLOOR='#e6e2da', HALL='#a0713f',
+      GENKAN='#cfcdc9', STAFF='#4a4d51', VER='#cfd3d6', MINT='#8cc776', YEL='#a0713f',
+      TOKO='#4a2f1f', CLOSET='#cfd0d2', CYAN='#63676a';
+  WOODSET[WOODF]=true; WOODSET[PEACH]=true;
+
+  // ================= 1F =================
+  floor(0,80,100,150,168,WET); floor(0,80,168,150,186,WOODF); floor(0,150,100,185,186,WOODF);  floor(0,80,186,185,265,WOODF); floor(0,80,265,185,325,WOODF);
+  floor(0,185,100,370,325,PEACH); floor(0,215,325,370,548,PEACH);
+  floor(0,215,548,272,710,GREYFLOOR);
+  floor(0,272,548,345,720,HALL);
+  floor(0,215,720,345,765,GENKAN);
+  // entrance steps down to ground level (same height as the semi-basement floor)
+  inSB(function(){ floor(0,240,815,340,850,'#d9d6cf'); stairs(0,240,765,340,815,'N',8,H/2); });
+  floor(0,345,548,400,592,GREYFLOOR);
+  inSB(function(){ floor(0,400,548,495,592,STAFF); floor(0,345,592,495,750,STAFF); });
+
+  door(0,'v',150,108,152); door(0,'v',150,170,184); door(0,'h',186,155,180); door(0,'v',185,205,245);
+  door(0,'v',185,277,315); door(0,'h',325,235,345); door(0,'h',548,285,335);
+  door(0,'v',272,652,706); door(0,'h',720,282,335); door(0,'v',345,640,660,true);
+  door(0,'h',765,276,340); door(0,'v',345,555,590); door(0,'v',400,548,592);
+
+  wallRect(0,80,100,150,168); wallRect(0,150,100,185,186);
+  box(G[0],75.8,166,84.2,188,0,WH,WALL,true); // west wall of the dressing-room extension
+  wallRect(0,80,186,185,265); wallRect(0,80,265,185,325);
+  wallRect(0,185,100,370,325); wallRect(0,215,325,370,548);
+  wallRect(0,215,548,272,710); wallRect(0,272,548,345,720);
+  inSB(function(){ wallRect(0,345,548,495,750); }); wallRect(0,215,720,345,765);
+  wallRect(0,345,548,400,592);
+  stairs(0,215,548,272,710,'N',18,H);
+  stairs(0,345,548,400,592,'E',8,H/2);
+  // 3 steps down from the corridor door into the staff room
+  for(var si=0;si<3;si++){
+    var top=-(H/2)*(si+1)/4;
+    box(G[0],345+si*3.5,640,348.5+si*3.5,660,-H/2,top+H/2,'#ece8e0',true);
+  }
+
+  // fixtures 1F
+  box(G[0],228,105,365,145,0,2.2,'#ebe8e2',true);
+  box(G[0],236,112,284,138,2.2,0.06,'#6d7a83',false);
+  cyl(G[0],322,128,0.45,2.2,0.06,'#2d3236'); cyl(G[0],344,128,0.45,2.2,0.06,'#2d3236');
+  function fb(l,x1,y1,x2,y2,y0,h,c){ return box(G[l],x1,y1,x2,y2,l*H+y0,h,c,true); }
+  // toilet 1F: tank on the west wall, seat faces the door on the east wall
+  box(G[0],84,282,104,308,0,1.9,'#ffffff',true);
+  box(G[0],104,285,148,305,0,1.0,'#ffffff',true);
+  // washstand with washer and dryer
+  box(G[0],128,238,176,259,0,2.4,'#7b5a3c',true);
+  box(G[0],126,236,178,261,2.4,0.25,'#f4f4f2',true);
+  box(G[0],138,241,166,257,2.62,0.05,'#c3ccd2',false);
+  cyl(G[0],152,243,0.14,2.65,0.8,'#25282b');
+  box(G[0],88,234,120,261,0,2.8,'#f3f3f0',true);
+  box(G[0],90,236,118,259,2.8,2.2,'#ffffff',true);
+  // DK: fridge, L-shaped bar counter, stools
+  var WOOD='#7a5535', WOODTOP='#5b3a22';
+  box(G[0],190,105,224,140,0,4.4,'#f4f6f7',true);
+  box(G[0],230,226,338,248,0,2.4,WOOD,true);
+  box(G[0],228,224,340,250,2.4,0.22,WOODTOP,true);
+  box(G[0],338,226,364,332,0,2.4,WOOD,true);
+  box(G[0],336,224,366,334,2.4,0.22,WOODTOP,true);
+  [250,280,310].forEach(function(sx){
+    cyl(G[0],sx,266,0.45,0,0.1,'#9aa0a6'); cyl(G[0],sx,266,0.12,0,1.8,'#9aa0a6'); cyl(G[0],sx,266,0.55,1.8,0.3,'#222222');
+  });
+  // living: rug, white sofa on the east side, TV stand on the west wall
+  box(G[0],260,395,335,495,0,0.1,'#1f6b2d',false);
+  box(G[0],222,400,256,490,0,1.3,'#f1eee8',true);
+  box(G[0],222,400,230,490,1.3,1.5,'#f1eee8',true);
+  box(G[0],222,400,256,408,1.3,0.7,'#f1eee8',true);
+  box(G[0],222,482,256,490,1.3,0.7,'#f1eee8',true);
+  box(G[0],342,392,366,492,0,2.0,'#6b4a33',true);
+  box(G[0],352,424,358,460,2.0,1.8,'#15181a',true);
+
+  // ================= 2F =================
+  floor(1,125,100,375,350,MINT);
+  floor(1,80,100,125,350,WOODF);
+  // 8 tatami mats in the standard 8-jo pattern, rotated so the photo's left side faces south
+  [[186.5,100,188.5,350],[311.5,100,313.5,350],[249,162.5,251,287.5],[125,224,187.5,226],[312.5,224,375,226],[187.5,161.5,312.5,163.5],[187.5,286.5,312.5,288.5]].forEach(function(r){
+    box(G[1],r[0],r[1],r[2],r[3],H,0.03,'#2f4378',false);
+  });
+  floor(1,80,104,125,215,TOKO,0.35);
+  box(G[1],80,217,125,346,H,2.4,CLOSET,true);
+  floor(1,215,355,375,490,YEL);
+  floor(1,215,490,272,558,TOILET);
+  floor(1,272,490,345,700,HALL);
+  in201(function(){
+    floor(1,345,592,500,760,YEL); floor(1,400,548,500,592,YEL);
+    floor(1,345,762,500,800,CYAN);
+  });
+
+  door(1,'h',350,240,340); door(1,'h',355,240,340); door(1,'h',490,285,335);
+  door(1,'v',272,510,540); door(1,'v',272,562,620); door(1,'h',640,272,345); door(1,'v',345,640,700); door(1,'v',345,490,548);
+
+  wallRect(1,80,100,375,350);
+  wallRect(1,215,355,375,490); wallRect(1,215,490,272,558);
+  wallRect(1,272,490,345,640); wallRect(1,272,640,345,700);
+    in201(function(){ wallRect(1,345,548,500,760); rail(1,345,762,500,800); });
+  stairs(1,272,640,345,700,'E',8,H/2);
+  // wall in front of the 2F toilet door: moved east to x=370 to line up with the 1F width
+  floor(1,345,490,370,548,HALL);
+  box(G[1],366,486,374,552,H,WH,WALL,true);
+  box(G[1],345,544,374,552,H,WH,WALL,true);
+  // toilet 2F: tank on the south wall, seat faces north
+  box(G[1],228,541,258,553,H,1.9,'#ffffff',true);
+  box(G[1],231,507,255,541,H,1.0,'#ffffff',true);
+  // 202(2): blue sofa with ottoman and low table
+  fb(1,220,360,260,420,0,1.2,'#3a6a8a');
+  fb(1,220,360,230,420,1.2,1.3,'#3a6a8a');
+  fb(1,220,422,260,452,0,1.0,'#3a6a8a');
+  // 201: bunk bed on the west side, sofa on the east wall
+  in201(function(){
+    fb(1,350,625,396,740,0,0.7,'#4a2f22');
+    fb(1,352,627,394,738,0.7,0.7,'#2f4f8f');
+    fb(1,350,625,396,740,2.5,0.3,'#4a2f22');
+    fb(1,352,627,394,738,2.8,0.5,'#2f4f8f');
+    [[350,625],[392,625],[350,736],[392,736]].forEach(function(p){ fb(1,p[0],p[1],p[0]+4,p[1]+4,0,3.8,'#3b2418'); });
+    fb(1,452,662,490,752,0,1.0,'#3b6290');
+    fb(1,456,666,486,748,1.0,0.4,'#b83228');
+    fb(1,484,662,492,752,1.0,1.6,'#3b6290');
+    // wall beside the top of the stairs
+    box(G[1],345,588,404,596,H,WH,WALL,true);
+  });
+
+  // ================= 3F =================
+  floor(2,345,548,500,755,YEL);
+  door(2,'v',345,640,700);
+  wallRect(2,345,548,500,755);
+  // 301: raised tatami platform (小上り) with storage cubes, along the south wall
+  [350,396,442].forEach(function(px){
+    fb(2,px,694,px+46,751,0,1.3,'#7b5236');
+    fb(2,px+1.5,695.5,px+44.5,749.5,1.3,0.35,'#2f6b3a');
+  });
+  // 301: double bed on the north side, opposite the platform
+  fb(2,350,552,480,610,0,0.8,'#5b3d2a');
+  fb(2,356,554,478,608,0.8,0.7,'#dfe6ee');
+  fb(2,414,554,478,608,1.5,0.1,'#3a5a8c');
+  fb(2,352,558,382,604,0.8,0.5,'#f4f4f1');
+
+  // ================= door leaves =================
+  var DC={swing:'#7a4e2d',slide:'#b48a58',bi:'#d2ad7a'};
+  function seg(g,l,x1,y1,x2,y2,th,col){
+    var dx=(x2-x1)/S, dz=(y2-y1)/S, len=Math.sqrt(dx*dx+dz*dz);
+    var m=new THREE.Mesh(new THREE.BoxGeometry(len,2.9,th/S),mat(col));
+    m.position.set(X((x1+x2)/2),l*H+1.45,Z((y1+y2)/2));
+    m.rotation.y=-Math.atan2(dz,dx);
+    g.add(m);
+    var e=new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry),lineMat);
+    e.position.copy(m.position); e.rotation.copy(m.rotation); g.add(e);
+  }
+  // o: 'v' wall runs north-south at x=c, 'h' wall runs east-west at y=c; a..b is the opening
+  function leafDoor(g,l,o,c,a,b,type,color){
+    var W=b-a;
+    var K=color?{swing:color,slide:color,bi:color}:DC;
+    function s(u1,p1,u2,p2,col){
+      var A=o==='v'?[c+p1,u1]:[u1,c+p1], B=o==='v'?[c+p2,u2]:[u2,c+p2];
+      seg(g,l,A[0],A[1],B[0],B[1],2,col);
+    }
+    if(type==='swing') s(a,0,b,0,K.swing);
+    else if(type==='slide1') s(a,-1.5,b,-1.5,K.slide);
+    else if(type==='slide2'){ var m=(a+b)/2; s(a,-1.5,m+W*0.07,-1.5,K.slide); s(m-W*0.07,1.5,b,1.5,K.slide); }
+    else { var w=W/2, ph=35*Math.PI/180, du=w*Math.cos(ph), dp=w*Math.sin(ph); s(a,0,a+du,dp,K.bi); s(a+du,dp,a+2*du,0,K.bi); }
+  }
+  // 1F
+  leafDoor(G[0],0,'v',150,108,152,'bi','#f7f7f4'); // shower room (white bifold)
+  leafDoor(G[0],0,'h',186,155,180,'bi');        // dressing room (bifold)
+  leafDoor(G[0],0,'v',185,205,245,'bi');        // washroom (bifold)
+  leafDoor(G[0],0,'v',185,277,315,'swing');     // toilet
+  leafDoor(G[0],0,'h',548,285,335,'swing');     // living room entrance
+  leafDoor(G[0],0,'h',765,276,340,'swing','#17181a'); // front door: black, east (right) half only; west half is wall
+  // (no door at the foot of the stairs up to 201)
+  // 201: door at the top of the stairs, into the room
+  in201(function(){
+    box(G[1],400,544,408,552,H,WH,WALL,true);
+    box(G[1],400,590,408,598,H,WH,WALL,true);
+  });
+  leafDoor(G201,1,'v',404,552,590,'swing');
+  leafDoor(G[0],0,'v',345,640,660,'slide1');    // staff room entrance, at corridor (1F) height; the old low door is now wall
+  // 2F
+  leafDoor(G[1],1,'h',352.5,240,340,'slide2');  // 202(1) / 202(2): two sliding leaves
+  leafDoor(G[1],1,'h',490,285,335,'swing');     // 202(2) entrance
+  leafDoor(G[1],1,'v',272,510,540,'swing');     // 2F toilet
+  // 3F (301)
+  leafDoor(G[2],2,'v',345,640,700,'swing');     // 301 entrance
+
+  // ================= labels =================
+  var labels=[];
+  var RED='#c4281c';
+  var L=[
+    [0,115,134,['シャワー','ルーム'],0.6],[0,167,150,['脱衣'],0.6],[0,132,212,['洗面・脱衣'],0.62],
+    [0,132,295,['トイレ'],0.6],[0,285,292,['DK'],1.1],[0,292,445,['リビング'],0.95],
+    [0,243,630,['階段'],0.7],[0,308,640,['廊下'],0.75],[0,280,742,['玄関'],0.75],
+    [0,420,670,[{t:'スタッフルーム'},{t:'入室禁止',c:RED}],0.75,'sb'],
+    [1,250,225,['202号室①'],1.0],[1,102,160,['床の間'],0.5],[1,102,282,['押入'],0.5],
+    [1,295,422,['202号室②'],0.9],[1,243,525,['トイレ'],0.55],[1,308,565,['廊下'],0.75],
+    [1,422,690,['201号'],1.0,true],[1,422,781,['ベランダ'],0.55,true],
+    [2,422,650,['301号室'],1.0]
+  ];
+  function makeLabel(def){
+    var l=def[0],x=def[1],y=def[2],lines=def[3].map(function(t){return typeof t==='string'?{t:t}:t;}),s=def[4];
+    var fp=56,pad=22,lh=fp*1.3;
+    var c=document.createElement('canvas'),ctx=c.getContext('2d');
+    ctx.font='700 '+fp+'px '+FONT;
+    var w=0; lines.forEach(function(o){w=Math.max(w,ctx.measureText(o.t).width);});
+    c.width=Math.ceil(w+pad*2); c.height=Math.ceil(lh*lines.length+pad);
+    ctx.font='700 '+fp+'px '+FONT;
+    ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.lineJoin='round';
+    ctx.lineWidth=9; ctx.strokeStyle='rgba(255,255,255,0.93)';
+    lines.forEach(function(o,i){
+      var yy=pad/2+lh*(i+0.5);
+      ctx.strokeText(o.t,c.width/2,yy);
+      ctx.fillStyle=o.c||'#1d2529';
+      ctx.fillText(o.t,c.width/2,yy);
+    });
+    var tex=new THREE.CanvasTexture(c); tex.anisotropy=4;
+    var sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthWrite:false}));
+    var k=s/fp*1.0;
+    sp.scale.set(c.width*k,c.height*k,1);
+    sp.position.set(X(x),l*H+1.2,Z(y));
+    sp.visible=labelsOn;
+    (def[5]==='sb'?Gsb:(def[5]?G201:G[l])).add(sp); labels.push(sp);
+  }
+  var labelsOn=true, built=false;
+  function buildLabels(){ if(built) return; built=true; L.forEach(makeLabel); }
+  var fontWait=new Promise(function(res){setTimeout(res,1500);});
+  try{
+    Promise.race([document.fonts.load('700 40px "Zen Kaku Gothic New"','階号室入室禁止'),fontWait]).then(buildLabels,buildLabels);
+  }catch(e){ buildLabels(); }
+
+  // ================= camera / controls =================
+  var controls=new THREE.OrbitControls(camera,canvas);
+  controls.enableDamping=true; controls.dampingFactor=0.08;
+  controls.maxPolarAngle=Math.PI/2.05; controls.minDistance=14; controls.maxDistance=150;
+
+  var floorSel='all';
+  function targetY(){ return floorSel==='all'?H:(+floorSel===2?1.5:+floorSel)*H; }
+  function fitDist(){
+    var a=camera.aspect||1, t=Math.tan(15*Math.PI/180);
+    var dH=40/(2*t), dW=25/(2*t*a);
+    return Math.max(dH,dW)*0.97;
+  }
+  var tw=null, reduce=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function goView(name){
+    var dir=name==='top'?new THREE.Vector3(0,1,0.05):new THREE.Vector3(0.22,0.74,0.64);
+    dir.normalize();
+    var tgt=new THREE.Vector3(0,targetY(),0);
+    var pos=tgt.clone().add(dir.multiplyScalar(fitDist()));
+    if(reduce){ camera.position.copy(pos); controls.target.copy(tgt); controls.update(); return; }
+    tw={p0:camera.position.clone(),t0:controls.target.clone(),p1:pos,t1:tgt,s:performance.now()};
+  }
+
+  function resize(){
+    var w=stage.clientWidth||300,h=stage.clientHeight||300;
+    renderer.setSize(w,h,false);
+    camera.aspect=w/h; camera.updateProjectionMatrix();
+  }
+  if(window.ResizeObserver) new ResizeObserver(resize).observe(stage); else window.addEventListener('resize',resize);
+  resize();
+  var view='tilt';
+  goView(view);
+  if(!reduce){ camera.position.copy(tw.p1); controls.target.copy(tw.t1); tw=null; controls.update(); }
+
+  function applyBg(){
+    try{ renderer.setClearColor(new THREE.Color(getComputedStyle(document.body).backgroundColor)); }
+    catch(e){ renderer.setClearColor(0xeef1f2); }
+  }
+  applyBg();
+  if(window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',applyBg);
+  new MutationObserver(applyBg).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+
+  // ================= UI =================
+  function setPressed(container,attr,val){
+    Array.prototype.forEach.call(container.querySelectorAll('button'),function(b){
+      b.setAttribute('aria-pressed',String(b.getAttribute(attr)===val));
+    });
+  }
+  var floorsEl=document.getElementById('floors'), viewsEl=document.getElementById('views'), lblEl=document.getElementById('lbl');
+  floorsEl.addEventListener('click',function(e){
+    var b=e.target.closest('button'); if(!b) return;
+    floorSel=b.getAttribute('data-f');
+    G.forEach(function(g,i){ g.visible=(floorSel==='all')||(+floorSel===i); });
+    G201.visible=(floorSel==='all')||floorSel==='1';
+    Gsb.visible=(floorSel==='all')||floorSel==='0';
+    setPressed(floorsEl,'data-f',floorSel);
+    goView(view);
+  });
+  viewsEl.addEventListener('click',function(e){
+    var b=e.target.closest('button'); if(!b) return;
+    view=b.getAttribute('data-v');
+    setPressed(viewsEl,'data-v',view);
+    goView(view);
+  });
+  lblEl.addEventListener('click',function(){
+    labelsOn=!labelsOn;
+    lblEl.setAttribute('aria-pressed',String(labelsOn));
+    labels.forEach(function(s){s.visible=labelsOn;});
+  });
+
+  function loop(now){
+    if(tw){
+      var k=Math.min(1,(now-tw.s)/700), e=1-Math.pow(1-k,3);
+      camera.position.lerpVectors(tw.p0,tw.p1,e);
+      controls.target.lerpVectors(tw.t0,tw.t1,e);
+      if(k>=1) tw=null;
+    }
+    controls.update();
+    renderer.render(scene,camera);
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+
+</body></html>
